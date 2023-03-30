@@ -1,0 +1,250 @@
+\chapter{Технологический раздел}
+
+\section{Выбор языка и среды программирования}
+
+В качестве языка программирования был выбран язык C. Данный ЯП используется для разработки всех модулей ядра и драйверов операционной системы Linux.
+
+Среда программирования --- Microsoft Visual Studio Code \cite{vscode}. Данное решение является кроссплатформенным и бесплатным, а также имеет открытый исходный код.
+
+\section{Точки входа в модуль}
+В листингах \ref{lst:md_init}--\ref{lst:md_exit} представлены точки входа в модуль --- init и exit --- в которых происходит создание и уничтожение очереди работ, а также регистрация и дерегистрация обработчика прерываний от клавиатуры. 
+
+\begin{lstlisting}[caption={Точки входа в модуль (часть 1)} \label{lst:md_init}]
+static int __init md_init(void)
+{
+    int ret;
+    printk(KERN_INFO "Module Initialization.\n");
+    ret = request_irq(KB_IRQ, (irq_handler_t)kb_irq_handler, IRQF_SHARED, "Custom Handler", (void *)(kb_irq_handler));
+    if (ret != 0)
+        printk(KERN_INFO "Cannot Request IRQ for keyboard.\n");
+
+    work = kmalloc(sizeof(struct work_struct), GFP_KERNEL);
+    if (work)
+    {
+        INIT_WORK((struct work_struct *)work, audio_controll);
+    }
+    wq = create_workqueue("keyboard_queue");
+
+    printk(KERN_INFO "Module Inited.\n");
+    return 0;
+}
+\end{lstlisting}
+
+\clearpage
+
+\begin{lstlisting}[caption={Точки входа в модуль (часть 2)} \label{lst:md_exit}]
+static void __exit md_exit(void)
+{
+    free_irq(KB_IRQ, (void *)(kb_irq_handler));
+    flush_workqueue(wq);
+    destroy_workqueue(wq);
+
+    if (work)
+        kfree(work);
+
+    printk(KERN_INFO "Module Exit.");
+}
+
+module_init(md_init);
+module_exit(md_exit);
+\end{lstlisting}
+
+\section{Обработка прерываний клавиатуры}
+В листингах \ref{lst:kb_irq_handler}--\ref{lst:system_volume_control3} представлен обработчик прерываний клавиатуры.
+
+\begin{lstlisting}[caption={Обработчик прерываний клавиатуры} \label{lst:kb_irq_handler}]
+irq_handler_t kb_irq_handler(int irq, void *dev_id, struct pt_regs *regs)
+{
+    spin_lock(&k_lock);
+    scancode = inb(0x60);
+    spin_unlock(&k_lock);
+
+    queue_work(wq, work);
+
+    return (irq_handler_t)IRQ_HANDLED;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Обработчик нижней половины прерывания(часть 1)} \label{lst:system_volume_control1}]
+void audio_controll(struct work_struct *work)
+{
+    static int alt = 0;
+    static long audio_flag = -1;
+
+    spin_lock(&k_lock);
+    switch (scancode)
+    {
+    case ALT_PRESSED:
+        alt = 1;
+        break;
+\end{lstlisting}
+
+\clearpage
+
+\begin{lstlisting}[caption={Обработчик нижней половины прерывания(часть 2)} \label{lst:system_volume_control2}]
+    case ALT_UNPRESSED:
+        alt = 0;
+        break;
+    case LEVEL0_PRESSED:
+        if (alt)
+            audio_flag = 0;
+        break;
+    case LEVEL1_PRESSED:
+        if (alt)
+            audio_flag = 10;
+        break;
+    case LEVEL2_PRESSED:
+        if (alt)
+            audio_flag = 20;
+        break;
+    case LEVEL3_PRESSED:
+        if (alt)
+            audio_flag = 30;
+        break;
+    case LEVEL4_PRESSED:
+        if (alt)
+            audio_flag = 40;
+        break;
+    case LEVEL5_PRESSED:
+        if (alt)
+            audio_flag = 50;
+        break;
+    case LEVEL6_PRESSED:
+        if (alt)
+            audio_flag = 60;
+        break;
+    case LEVEL7_PRESSED:
+        if (alt)
+            audio_flag = 70;
+        break;
+    case LEVEL8_PRESSED:
+        if (alt)
+            audio_flag = 80;
+        break;
+    case LEVEL9_PRESSED:
+        if (alt)
+            audio_flag = 90;
+        break;
+\end{lstlisting}
+
+\clearpage
+
+\begin{lstlisting}[caption={Обработчик нижней половины прерывания(часть 3)} \label{lst:system_volume_control3}]
+    case LEVELMINUS_PRESSED:
+        if (alt && current_audio > 0)
+            audio_flag = current_audio - 1;
+        break;
+    case LEVELPLUS_PRESSED:
+        if (alt && current_audio < 100)
+            audio_flag = current_audio + 1;
+        break;
+    default:
+        break;
+    }
+
+    if (audio_flag >= 0)
+    {
+        printk(KERN_INFO "System Volume Changing Started.\n");
+        current_audio = audio_flag;
+        char buffer[10];
+        sprintf(buffer, "%d", current_audio);
+        char *argv[] = {"/home/leerycorsair/os_course/audio_controller", buffer, NULL};
+        static char *envp[] = {
+            "HOME=/",
+            "TERM=linux",
+            "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL};
+
+        call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+        printk(KERN_INFO "System Volume Changed to %d\%.\n", current_audio);
+    }
+
+    audio_flag = -1;
+    spin_unlock(&k_lock);
+}
+\end{lstlisting}
+
+\section{Функция изменения громкости}
+
+В листинге \ref{lst:system_volume_controller} приведена структура, описывающая звуковое устройство для которого создается функция изменения громкости.
+
+\clearpage
+
+\begin{lstlisting}[caption={Структура system\_volume\_controller} \label{lst:system_volume_controller}]
+struct audio_controller
+{
+    long min, max;
+    snd_mixer_t *handle;
+    snd_mixer_selem_id_t *sid;
+    const char *card;
+    const char *selem_name;
+} a_controller;
+\end{lstlisting}
+
+В данной структуре созданы следующие поля:
+\begin{itemize}
+    \item min и max --- минимальный и максимальный физический уровень громкости;
+    \item handle --- микшерное устройство;
+    \item sid --- идентификатор микшерного элемента;
+    \item card --- имя устройства воспроизведения;
+    \item selem\_name --- имя микшерного элемента.
+\end{itemize}
+
+В листингах \ref{lst:system_volume_change1}--\ref{lst:system_volume_change2} представлена функция изменения уровня громкости.
+
+\begin{lstlisting}[caption={Функция изменения громкости (часть 1)} \label{lst:system_volume_change1}]
+void audio_level_change(long audio_level)
+{
+    a_controller.card = "default";
+    a_controller.selem_name = "Master";
+
+    if (snd_mixer_open(&(a_controller.handle), 0) < 0)
+        return;
+
+    if (snd_mixer_attach(a_controller.handle, a_controller.card) < 0)
+        return;
+
+    if (snd_mixer_selem_register(a_controller.handle, NULL, NULL) < 0)
+        return;
+
+    if (snd_mixer_load(a_controller.handle) < 0)
+        return;
+
+    snd_mixer_selem_id_alloca(&(a_controller.sid));
+    snd_mixer_selem_id_set_index(a_controller.sid, 0);
+    snd_mixer_selem_id_set_name(a_controller.sid, a_controller.selem_name);
+\end{lstlisting}
+
+\clearpage
+
+\begin{lstlisting}[caption={Функция изменения громкости (часть 2)} \label{lst:system_volume_change2}]
+    snd_mixer_elem_t *elem = snd_mixer_find_selem(a_controller.handle, a_controller.sid);
+    if (elem == NULL)
+        return;
+
+    snd_mixer_selem_get_playback_volume_range(elem, &(a_controller.min), &(a_controller.max));
+    if (snd_mixer_selem_set_playback_volume_all(elem, audio_level * a_controller.max / 100) < 0)
+        return;
+
+    snd_mixer_close(a_controller.handle);
+}
+\end{lstlisting}
+
+\section{Сборка разработанного модуля}
+
+Для компиляции загружаемого модуля используется утилита make. Конфигурационный файл makefile приведен в листинге \ref{lst:makefile} \cite{makefile}.
+
+\begin{lstlisting}[caption={makefile для сборки} \label{lst:makefile}]
+CONFIG_MODULE_SIG=n
+CURRENT = $(shell uname -r)
+KDIR = /lib/modules/$(CURRENT)/build
+PWD = $(shell pwd)
+TARGET = audio_module
+obj-m := $(TARGET).o
+
+
+default: audio_controller
+	$(MAKE) -C$(KDIR) M=$(PWD) modules
+  
+audio_controller: audio_controller.c
+	gcc -o $@ $@.c -lasound
+\end{lstlisting}
